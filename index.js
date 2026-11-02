@@ -47,30 +47,37 @@ function sendTelegramAlert(message) {
     req.end();
 }
 
-// --- 1. BINANCE WEBSOCKET (සජීවී මිල ගණන් ලබා ගැනීම) ---
+// --- 1. BINANCE COMBINED WEBSOCKET (නිවැරදි කළ සජීවී මිල පද්ධතිය) ---
 function startWebSocket() {
-    const streams = COIN_POOL.map(function(coin) { return coin.toLowerCase() + '@ticker'; }).join('/');
-    const ws = new WebSocket('wss://://binance.com' + streams);
+    // බයිනෑන්ස් බහු-කාසි ස්ට්‍රීම් සඳහා නිවැරදි URL සැකසුම
+    const streamUrl = 'wss://://binance.com';
+    const ws = new WebSocket(streamUrl);
+
+    ws.on('open', function() {
+        console.log("Binance Live Stream Connected Successfully!");
+    });
 
     ws.on('message', function(data) {
         try {
             const json = JSON.parse(data);
-            if (json.s && json.c) {
-                livePrices[json.s] = parseFloat(json.c);
-                checkTpSlHits(json.s, livePrices[json.s]);
+            // Combined stream එකක දත්ත එන්නේ json.data ඇතුළතයි
+            const ticker = json.data;
+            if (ticker && ticker.s && ticker.c) {
+                livePrices[ticker.s] = parseFloat(ticker.c);
+                checkTpSlHits(ticker.s, livePrices[ticker.s]);
             }
         } catch (e) {
-            console.error("JSON Parse Error");
+            console.error("JSON Parse Error in Stream");
         }
     });
 
     ws.on('close', function() {
-        console.log("WebSocket closed. Reconnecting...");
+        console.log("WebSocket closed. Reconnecting in 5 seconds...");
         setTimeout(startWebSocket, 5000);
     });
 
     ws.on('error', function(err) {
-        console.error("WS Error:", err);
+        console.error("WS Error:", err.message);
     });
 }
 
@@ -132,7 +139,7 @@ function startScanningEngine() {
     }, 4000);
 }
 
-// --- 3. TP/SL CHECKER (ඉලක්ක සපුරා ඇත්දැයි සජීවීව පරීක්ෂා කිරීම) ---
+// --- 3. TP/SL CHECKER (ඉලක්ක සජීවීව පරීක්ෂා කිරීම) ---
 function checkTpSlHits(symbol, currentPrice) {
     if (activeSignals.length === 0) return;
 
@@ -175,7 +182,6 @@ startWebSocket();
 startScanningEngine();
 
 // --- 4. RENDER LOCAL HTTP SERVER & SELF-PING LOGIC ---
-// සර්වර් එකේ පෝට් එකක් විවෘතව තබා ගැනීම සහ වසා දැමීම වැළැක්වීමට තත්පර 20කට වරක් තමාටම පින්ග් කර ගැනීම
 const http = require('http');
 const server = http.createServer(function(req, res) {
     res.end("Nexus Scanner Active");
@@ -190,9 +196,9 @@ setInterval(function() {
     if (process.env.RENDER_EXTERNAL_HOSTNAME) {
         const url = 'https://' + process.env.RENDER_EXTERNAL_HOSTNAME;
         https.get(url, function(res) {
-            console.log("Self-ping successful. Keeping service alive.");
+            console.log("Self-ping status: " + res.statusCode);
         }).on('error', function(e) {
-            console.error("Self-ping failed, but server is running.");
+            console.error("Self-ping failed gracefully.");
         });
     }
 }, 20000);
