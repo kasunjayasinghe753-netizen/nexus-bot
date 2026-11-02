@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 const https = require('https');
 
-// --- ටෙලිග්‍රෑම් සැකසුම් ---
+// --- ටෙලිග්‍රෑම් සැකසුම් (Telegram Settings) ---
 const BOT_TOKEN = "9158004718:AAGHoTKv1viYcp_xRawQIclQF9-IUE-0pxw";
 const CHAT_ID = "-1003944785552";
 
@@ -14,7 +14,7 @@ const slGapPercent = 4;
 let livePrices = {};
 let activeSignals = [];
 
-// --- ටෙලිග්‍රෑම් පණිවිඩ යැවීම ---
+// --- ටෙලිග්‍රෑම් පණිවිඩ යැවීමේ ශ්‍රිතය ---
 function sendTelegramAlert(message) {
     if (!BOT_TOKEN || !CHAT_ID) return;
     
@@ -47,7 +47,7 @@ function sendTelegramAlert(message) {
     req.end();
 }
 
-// --- 1. BINANCE WEBSOCKET ---
+// --- 1. BINANCE WEBSOCKET (සජීවී මිල ගණන් ලබා ගැනීම) ---
 function startWebSocket() {
     const streams = COIN_POOL.map(function(coin) { return coin.toLowerCase() + '@ticker'; }).join('/');
     const ws = new WebSocket('wss://://binance.com' + streams);
@@ -74,7 +74,7 @@ function startWebSocket() {
     });
 }
 
-// --- 2. COIN SCANNING ENGINE ---
+// --- 2. COIN SCANNING ENGINE (සිග්නල් සෑදීමේ පද්ධතිය) ---
 function startScanningEngine() {
     console.log("NEXUS Engine Started...");
     
@@ -113,7 +113,7 @@ function startScanningEngine() {
             };
 
             activeSignals.push(newSignal);
-            console.log("New Signal: " + randomCoin);
+            console.log("New Signal Generated for: " + randomCoin);
 
             const signalMsg = "🚀 *NEXUS MULTI-SCAN VIP SIGNAL* 🚀\n" +
                 "+ 🪙 Asset: #" + randomCoin + "\n" +
@@ -132,7 +132,7 @@ function startScanningEngine() {
     }, 4000);
 }
 
-// --- 3. TP/SL CHECKER ---
+// --- 3. TP/SL CHECKER (ඉලක්ක සපුරා ඇත්දැයි සජීවීව පරීක්ෂා කිරීම) ---
 function checkTpSlHits(symbol, currentPrice) {
     if (activeSignals.length === 0) return;
 
@@ -152,7 +152,7 @@ function checkTpSlHits(symbol, currentPrice) {
                 signal.status = 'STOP_LOSS_HIT';
                 sendTelegramAlert("🛑 *" + signal.symbol + " CRITICAL STOP LOSS HIT.*\nRisk managed effectively.");
             }
-        } else {
+        } else { // SELL SHORT
             if (!signal.tp1Hit && currentPrice <= signal.tp1) {
                 signal.tp1Hit = true;
                 sendTelegramAlert("🎯 *" + signal.symbol + " SHORT TP1 HIT!* 📉\n🔥 Profit Target Secured!");
@@ -170,10 +170,29 @@ function checkTpSlHits(symbol, currentPrice) {
     });
 }
 
+// --- පද්ධති ආරම්භ කිරීම ---
 startWebSocket();
 startScanningEngine();
 
+// --- 4. RENDER LOCAL HTTP SERVER & SELF-PING LOGIC ---
+// සර්වර් එකේ පෝට් එකක් විවෘතව තබා ගැනීම සහ වසා දැමීම වැළැක්වීමට තත්පර 20කට වරක් තමාටම පින්ග් කර ගැනීම
 const http = require('http');
-http.createServer(function(req, res) {
+const server = http.createServer(function(req, res) {
     res.end("Nexus Scanner Active");
-}).listen(process.env.PORT || 3000);
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, function() {
+    console.log("HTTP Server running on port " + PORT);
+});
+
+setInterval(function() {
+    if (process.env.RENDER_EXTERNAL_HOSTNAME) {
+        const url = 'https://' + process.env.RENDER_EXTERNAL_HOSTNAME;
+        https.get(url, function(res) {
+            console.log("Self-ping successful. Keeping service alive.");
+        }).on('error', function(e) {
+            console.error("Self-ping failed, but server is running.");
+        });
+    }
+}, 20000);
