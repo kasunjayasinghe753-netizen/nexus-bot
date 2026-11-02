@@ -1,10 +1,10 @@
 const WebSocket = require('ws');
 
-// --- සැකසුම් (Settings) ---
-const COIN_POOL = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'];
-const BOT_TOKEN = "ඔයාගේ_TELEGRAM_BOT_TOKEN_එක_මෙතනට_දාන්න";
-const CHAT_ID = "ඔයාගේ_TELEGRAM_CHAT_ID_එක_මෙතනට_දාන්න";
+// --- ඔයා ලබාදුන් ටෙලිග්‍රෑම් සැකසුම් (Telegram Settings) ---
+const BOT_TOKEN = "9158004718:AAGHoTKv1viYcp_xRawQIclQF9-IUE-0pxw";
+const CHAT_ID = "-1003944785552";
 
+const COIN_POOL = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'];
 const futuresBalance = 1000.00;
 const userLeverage = 20;
 const riskPercent = 2;
@@ -37,7 +37,6 @@ function startWebSocket() {
         const json = JSON.parse(data);
         if (json.s && json.c) {
             livePrices[json.s] = parseFloat(json.c);
-            // මිල වෙනස් වන හැම වෙලාවකම TP/SL පරීක්ෂා කිරීම
             checkTpSlHits(json.s, livePrices[json.s]);
         }
     });
@@ -50,7 +49,7 @@ function startWebSocket() {
     ws.on('error', (err) => console.error("WebSocket Error:", err));
 }
 
-// --- 2. BACKGROUND COIN SCANNING ENGINE (තත්පර 4කට වරක් රන් වේ) ---
+// --- 2. BACKGROUND COIN SCANNING ENGINE ---
 function startScanningEngine() {
     console.log("NEXUS Multi-Coin Scan Engine Started...");
     
@@ -59,9 +58,8 @@ function startScanningEngine() {
         const currentVolSpike = parseFloat((Math.random() * (2.2 - 0.7) + 0.7).toFixed(2));
         const currentPriceNum = livePrices[randomCoin];
 
-        if (!currentPriceNum) return; // මිල තවම ලැබී නැත්නම් මඟහරින්න
+        if (!currentPriceNum) return;
 
-        // Volume >= 1.5x MA රටාව සිමියුලේට් කිරීම
         if (currentVolSpike >= 1.5) {
             const isLong = Math.random() > 0.4;
             const calculatedMargin = (futuresBalance * (riskPercent / 100)).toFixed(2);
@@ -151,6 +149,6 @@ function checkTpSlHits(symbol, currentPrice) {
 startWebSocket();
 startScanningEngine();
 
-// Render එකේ Web Service එකක් ලෙස නොමිලේ දුවන්න නම් Dummy Port එකක් Open කර තැබිය යුතුය
+// Render Service Dummy Port
 const http = require('http');
 http.createServer((req, res) => res.end("Nexus Scanner is Running 24/7")).listen(process.env.PORT || 3000);
