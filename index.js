@@ -1,204 +1,461 @@
-const WebSocket = require('ws');
-const https = require('https');
 
-// --- ටෙලිග්‍රෑම් සැකසුම් (Telegram Settings) ---
-const BOT_TOKEN = "9158004718:AAGHoTKv1viYcp_xRawQIclQF9-IUE-0pxw";
-const CHAT_ID = "-1003944785552";
+'use strict';
 
-const COIN_POOL = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'];
-const futuresBalance = 1000.00;
-const userLeverage = 20;
-const riskPercent = 2;
-const slGapPercent = 4;
-
-let livePrices = {};
-let activeSignals = [];
-
-// --- ටෙලිග්‍රෑම් පණිවිඩ යැවීමේ ශ්‍රිතය ---
-function sendTelegramAlert(message) {
-    if (!BOT_TOKEN || !CHAT_ID) return;
-    
-    const data = JSON.stringify({
-        chat_id: CHAT_ID,
-        text: message,
-        parse_mode: 'Markdown'
-    });
-
-    const options = {
-        hostname: 'api.telegram.org',
-        port: 443,
-        path: '/bot' + BOT_TOKEN + '/sendMessage',
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(data)
-        }
-    };
-
-    const req = https.request(options, function(res) {
-        console.log('Telegram Status: ' + res.statusCode);
-    });
-
-    req.on('error', function(err) {
-        console.error("Telegram Error: ", err);
-    });
-
-    req.write(data);
-    req.end();
-}
-
-// --- 1. BINANCE COMBINED WEBSOCKET (නිවැරදි කළ සජීවී මිල පද්ධතිය) ---
-function startWebSocket() {
-    // බයිනෑන්ස් බහු-කාසි ස්ට්‍රීම් සඳහා නිවැරදි URL සැකසුම
-    const streamUrl = 'wss://://binance.com';
-    const ws = new WebSocket(streamUrl);
-
-    ws.on('open', function() {
-        console.log("Binance Live Stream Connected Successfully!");
-    });
-
-    ws.on('message', function(data) {
-        try {
-            const json = JSON.parse(data);
-            // Combined stream එකක දත්ත එන්නේ json.data ඇතුළතයි
-            const ticker = json.data;
-            if (ticker && ticker.s && ticker.c) {
-                livePrices[ticker.s] = parseFloat(ticker.c);
-                checkTpSlHits(ticker.s, livePrices[ticker.s]);
-            }
-        } catch (e) {
-            console.error("JSON Parse Error in Stream");
-        }
-    });
-
-    ws.on('close', function() {
-        console.log("WebSocket closed. Reconnecting in 5 seconds...");
-        setTimeout(startWebSocket, 5000);
-    });
-
-    ws.on('error', function(err) {
-        console.error("WS Error:", err.message);
-    });
-}
-
-// --- 2. COIN SCANNING ENGINE (සිග්නල් සෑදීමේ පද්ධතිය) ---
-function startScanningEngine() {
-    console.log("NEXUS Engine Started...");
-    
-    setInterval(function() {
-        const randomCoin = COIN_POOL[Math.floor(Math.random() * COIN_POOL.length)];
-        const currentVolSpike = parseFloat((Math.random() * (2.2 - 0.7) + 0.7).toFixed(2));
-        const currentPriceNum = livePrices[randomCoin];
-
-        if (!currentPriceNum) return;
-
-        if (currentVolSpike >= 1.5) {
-            const isLong = Math.random() > 0.4;
-            const calculatedMargin = (futuresBalance * (riskPercent / 100)).toFixed(2);
-            const calculatedQty = ((calculatedMargin * userLeverage) / currentPriceNum).toFixed(4);
-
-            const slFactor = slGapPercent / 100;
-            const stopLossTarget = isLong ? (currentPriceNum * (1 - slFactor)) : (currentPriceNum * (1 + slFactor));
-
-            const tpInterval = currentPriceNum * 0.01; 
-            const tp1 = isLong ? currentPriceNum + tpInterval : currentPriceNum - tpInterval;
-            const tp2 = isLong ? currentPriceNum + (tpInterval * 2) : currentPriceNum - (tpInterval * 2);
-            const tp3 = isLong ? currentPriceNum + (tpInterval * 3) : currentPriceNum - (tpInterval * 3);
-
-            const newSignal = {
-                id: Date.now(),
-                symbol: randomCoin,
-                orderType: isLong ? 'BUY LONG' : 'SELL SHORT',
-                leverage: userLeverage + 'x',
-                entryPrice: currentPriceNum,
-                margin: calculatedMargin,
-                quantity: calculatedQty,
-                tp1: tp1, tp2: tp2, tp3: tp3,
-                sl: stopLossTarget,
-                status: 'PENDING',
-                tp1Hit: false, tp2Hit: false, tp3Hit: false
-            };
-
-            activeSignals.push(newSignal);
-            console.log("New Signal Generated for: " + randomCoin);
-
-            const signalMsg = "🚀 *NEXUS MULTI-SCAN VIP SIGNAL* 🚀\n" +
-                "+ 🪙 Asset: #" + randomCoin + "\n" +
-                "+ 📈 Direction: " + (isLong ? "🟢 LONG (BUY)" : "🔴 SHORT (SELL)") + "\n" +
-                "+ ⚙️ Leverage: " + userLeverage + "x\n\n" +
-                "+ 📍 Entry Price: $" + currentPriceNum.toFixed(2) + "\n" +
-                "+ 🛡️ Rec. Margin: $" + calculatedMargin + "\n\n" +
-                "+ 🎯 TAKE PROFIT TARGETS:\n" +
-                "+ 1️⃣ TP1: $" + tp1.toFixed(2) + "\n" +
-                "+ 2️⃣ TP2: $" + tp2.toFixed(2) + "\n" +
-                "+ 3️⃣ TP3: $" + tp3.toFixed(2) + "\n\n" +
-                "+ 🛑 CRITICAL STOP LOSS: $" + stopLossTarget.toFixed(2);
-
-            sendTelegramAlert(signalMsg);
-        }
-    }, 4000);
-}
-
-// --- 3. TP/SL CHECKER (ඉලක්ක සජීවීව පරීක්ෂා කිරීම) ---
-function checkTpSlHits(symbol, currentPrice) {
-    if (activeSignals.length === 0) return;
-
-    activeSignals = activeSignals.map(function(signal) {
-        if (signal.symbol !== symbol || signal.status !== 'PENDING') return signal;
-
-        if (signal.orderType === 'BUY LONG') {
-            if (!signal.tp1Hit && currentPrice >= signal.tp1) {
-                signal.tp1Hit = true;
-                sendTelegramAlert("🎯 *" + signal.symbol + " TAKE PROFIT 1 HIT!* 🚀\n🔥 Profit Target 1 Secured!");
-            }
-            if (!signal.tp2Hit && currentPrice >= signal.tp2) {
-                signal.tp2Hit = true;
-                sendTelegramAlert("🎯🎯 *" + signal.symbol + " TAKE PROFIT 2 HIT!!* 🔥\n🚀 Profit Matrix Cleared!");
-            }
-            if (currentPrice <= signal.sl) {
-                signal.status = 'STOP_LOSS_HIT';
-                sendTelegramAlert("🛑 *" + signal.symbol + " CRITICAL STOP LOSS HIT.*\nRisk managed effectively.");
-            }
-        } else { // SELL SHORT
-            if (!signal.tp1Hit && currentPrice <= signal.tp1) {
-                signal.tp1Hit = true;
-                sendTelegramAlert("🎯 *" + signal.symbol + " SHORT TP1 HIT!* 📉\n🔥 Profit Target Secured!");
-            }
-            if (!signal.tp2Hit && currentPrice <= signal.tp2) {
-                signal.tp2Hit = true;
-                sendTelegramAlert("🎯🎯 *" + signal.symbol + " SHORT TP2 HIT!!* 🚀");
-            }
-            if (currentPrice >= signal.sl) {
-                signal.status = 'STOP_LOSS_HIT';
-                sendTelegramAlert("🛑 *" + signal.symbol + " SHORT SL HIT.*\nRisk managed.");
-            }
-        }
-        return signal;
-    });
-}
-
-// --- පද්ධති ආරම්භ කිරීම ---
-startWebSocket();
-startScanningEngine();
-
-// --- 4. RENDER LOCAL HTTP SERVER & SELF-PING LOGIC ---
 const http = require('http');
-const server = http.createServer(function(req, res) {
-    res.end("Nexus Scanner Active");
-});
+const WebSocket = require('ws');
+
+// ==========================================
+// CONFIGURATION
+// ==========================================
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, function() {
-    console.log("HTTP Server running on port " + PORT);
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'];
+
+const VOLUME_MULTIPLIER = 3;
+const HISTORY_LENGTH = 20;
+const MIN_HISTORY = 10;
+
+const TAKE_PROFIT_PERCENT = 1.5;
+const STOP_LOSS_PERCENT = 1.0;
+
+const SIGNAL_COOLDOWN_MS = 5 * 60 * 1000;
+
+const STREAMS = SYMBOLS.map(
+  symbol => `${symbol.toLowerCase()}@trade`
+).join('/');
+
+const BINANCE_URL =
+  `wss://stream.binance.com:443/stream?streams=${STREAMS}`;
+
+// ==========================================
+// STATE
+// ==========================================
+
+const market = {};
+
+for (const symbol of SYMBOLS) {
+  market[symbol] = {
+    price: 0,
+    minute: null,
+    minuteVolume: 0,
+    minuteClose: 0,
+    history: [],
+    lastSignal: 0,
+    position: null
+  };
+}
+
+let ws = null;
+let reconnectTimer = null;
+let rotationTimer = null;
+let reconnectDelay = 1000;
+let stopping = false;
+let connected = false;
+
+// ==========================================
+// TELEGRAM
+// ==========================================
+
+async function sendTelegram(message) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.error('Telegram credentials are missing.');
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_CHAT_ID,
+          text: message,
+          parse_mode: 'HTML'
+        }),
+        signal: AbortSignal.timeout(10000)
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(body);
+    }
+
+    console.log('Telegram notification sent.');
+  } catch (error) {
+    console.error('Telegram error:', error.message);
+  }
+}
+
+// ==========================================
+// SIGNAL GENERATION
+// ==========================================
+
+function generateSignal(symbol, price, volume, average) {
+  const state = market[symbol];
+  const now = Date.now();
+
+  if (state.position) return;
+
+  if (now - state.lastSignal < SIGNAL_COOLDOWN_MS) {
+    return;
+  }
+
+  const entry = price;
+
+  const takeProfit =
+    entry * (1 + TAKE_PROFIT_PERCENT / 100);
+
+  const stopLoss =
+    entry * (1 - STOP_LOSS_PERCENT / 100);
+
+  state.position = {
+    entry,
+    takeProfit,
+    stopLoss,
+    openedAt: now
+  };
+
+  state.lastSignal = now;
+
+  const message = `
+🚨 <b>CRYPTO VOLUME SPIKE</b>
+
+🪙 Coin: <b>${symbol}</b>
+📊 Signal: <b>LONG</b>
+
+💰 Entry: ${entry.toFixed(8)}
+🎯 Take Profit: ${takeProfit.toFixed(8)}
+🛑 Stop Loss: ${stopLoss.toFixed(8)}
+
+📈 Current Volume: ${volume.toFixed(4)}
+📉 Average Volume: ${average.toFixed(4)}
+🔥 Volume Spike: ${(volume / average).toFixed(2)}x
+
+⏰ Time: ${new Date().toUTCString()}
+
+⚠️ Simulated signal. Not financial advice.
+`;
+
+  console.log(message);
+  sendTelegram(message);
+}
+
+// ==========================================
+// VOLUME ANALYSIS
+// ==========================================
+
+function processVolume(symbol, tradePrice, tradeQuantity, timestamp) {
+  const state = market[symbol];
+
+  const currentMinute = Math.floor(timestamp / 60000);
+
+  if (state.minute === null) {
+    state.minute = currentMinute;
+  }
+
+  // A new minute has started.
+  if (currentMinute > state.minute) {
+    const completedVolume = state.minuteVolume;
+    const completedPrice = state.minuteClose;
+
+    if (state.history.length >= MIN_HISTORY) {
+      const average =
+        state.history.reduce((sum, value) => sum + value, 0) /
+        state.history.length;
+
+      if (
+        average > 0 &&
+        completedVolume >= average * VOLUME_MULTIPLIER
+      ) {
+        generateSignal(
+          symbol,
+          completedPrice,
+          completedVolume,
+          average
+        );
+      }
+    }
+
+    state.history.push(completedVolume);
+
+    if (state.history.length > HISTORY_LENGTH) {
+      state.history.shift();
+    }
+
+    state.minute = currentMinute;
+    state.minuteVolume = 0;
+  }
+
+  state.minuteVolume += tradeQuantity;
+  state.minuteClose = tradePrice;
+}
+
+// ==========================================
+// TAKE PROFIT / STOP LOSS
+// ==========================================
+
+function checkPositions(symbol, price) {
+  const state = market[symbol];
+  const position = state.position;
+
+  if (!position) return;
+
+  let result = null;
+
+  if (price >= position.takeProfit) {
+    result = 'TAKE PROFIT HIT 🎯';
+  } else if (price <= position.stopLoss) {
+    result = 'STOP LOSS HIT 🛑';
+  }
+
+  if (!result) return;
+
+  const profitPercent =
+    ((price - position.entry) / position.entry) * 100;
+
+  const message = `
+${result}
+
+🪙 Coin: <b>${symbol}</b>
+
+💰 Entry: ${position.entry.toFixed(8)}
+📍 Exit: ${price.toFixed(8)}
+
+📊 Result: ${profitPercent.toFixed(2)}%
+
+⏰ Time: ${new Date().toUTCString()}
+
+⚠️ Simulated trade result.
+`;
+
+  console.log(message);
+
+  state.position = null;
+
+  sendTelegram(message);
+}
+
+// ==========================================
+// BINANCE MESSAGE PROCESSING
+// ==========================================
+
+function handleMessage(rawData) {
+  try {
+    const message = JSON.parse(rawData.toString());
+
+    // Combined streams wrap events in data.
+    const trade = message.data;
+
+    if (!trade || trade.e !== 'trade') return;
+
+    const symbol = trade.s;
+
+    if (!market[symbol]) return;
+
+    const price = Number(trade.p);
+    const quantity = Number(trade.q);
+    const timestamp = Number(trade.T);
+
+    if (
+      !Number.isFinite(price) ||
+      !Number.isFinite(quantity) ||
+      !Number.isFinite(timestamp) ||
+      price <= 0 ||
+      quantity <= 0
+    ) {
+      return;
+    }
+
+    const state = market[symbol];
+
+    state.price = price;
+
+    // Check existing simulated positions on every trade.
+    checkPositions(symbol, price);
+
+    // Analyze trading volume.
+    processVolume(
+      symbol,
+      price,
+      quantity,
+      timestamp
+    );
+
+  } catch (error) {
+    console.error('Message processing error:', error.message);
+  }
+}
+
+// ==========================================
+// WEBSOCKET CONNECTION
+// ==========================================
+
+function connectBinance() {
+  if (stopping) return;
+
+  console.log('Connecting to Binance...');
+  console.log(BINANCE_URL);
+
+  try {
+    ws = new WebSocket(BINANCE_URL, {
+      handshakeTimeout: 15000,
+      perMessageDeflate: false
+    });
+
+    ws.on('open', () => {
+      console.log('Binance WebSocket connected!');
+
+      connected = true;
+      reconnectDelay = 1000;
+
+      // Rotate before Binance's 24-hour connection limit.
+      rotationTimer = setTimeout(() => {
+        console.log('Scheduled WebSocket rotation.');
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, 'Scheduled rotation');
+        }
+      }, 23 * 60 * 60 * 1000 + 50 * 60 * 1000);
+    });
+
+    ws.on('message', handleMessage);
+
+    ws.on('error', error => {
+      console.error('WebSocket error:', error.message);
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log(
+        'WebSocket disconnected:',
+        code,
+        reason.toString()
+      );
+
+      connected = false;
+
+      clearTimeout(rotationTimer);
+
+      if (!stopping) {
+        scheduleReconnect();
+      }
+    });
+
+  } catch (error) {
+    console.error('Connection error:', error.message);
+    scheduleReconnect();
+  }
+}
+
+// ==========================================
+// AUTOMATIC RECONNECTION
+// ==========================================
+
+function scheduleReconnect() {
+  if (stopping || reconnectTimer) return;
+
+  console.log(
+    `Reconnecting in ${reconnectDelay / 1000} seconds...`
+  );
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectBinance();
+  }, reconnectDelay);
+
+  reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+}
+
+// ==========================================
+// HTTP SERVER FOR RENDER
+// ==========================================
+
+const server = http.createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json'
+    });
+
+    res.end(JSON.stringify({
+      status: 'running',
+      service: 'Crypto Scanner Bot',
+      binanceConnected: connected,
+      symbols: SYMBOLS,
+      uptime: process.uptime()
+    }));
+
+    return;
+  }
+
+  res.writeHead(404, {
+    'Content-Type': 'application/json'
+  });
+
+  res.end(JSON.stringify({
+    error: 'Not found'
+  }));
 });
 
-setInterval(function() {
-    if (process.env.RENDER_EXTERNAL_HOSTNAME) {
-        const url = 'https://' + process.env.RENDER_EXTERNAL_HOSTNAME;
-        https.get(url, function(res) {
-            console.log("Self-ping status: " + res.statusCode);
-        }).on('error', function(e) {
-            console.error("Self-ping failed gracefully.");
-        });
-    }
-}, 20000);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`HTTP server listening on port ${PORT}`);
+
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.warn(
+      'WARNING: Telegram credentials are not configured.'
+    );
+  }
+
+  connectBinance();
+
+  sendTelegram(
+    '🤖 <b>Crypto Scanner Bot Started</b>\n\n' +
+    'Binance scanner is starting.\n' +
+    'Monitoring: BTC, ETH, SOL, DOGE.'
+  );
+});
+
+// ==========================================
+// GRACEFUL SHUTDOWN
+// ==========================================
+
+function shutdown() {
+  if (stopping) return;
+
+  stopping = true;
+
+  console.log('Shutting down bot...');
+
+  clearTimeout(reconnectTimer);
+  clearTimeout(rotationTimer);
+
+  if (ws) {
+    ws.removeAllListeners();
+    ws.close();
+  }
+
+  server.close(() => {
+    console.log('HTTP server closed.');
+    process.exit(0);
+  });
+
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+process.on('unhandledRejection', error => {
+  console.error('Unhandled rejection:', error);
+});
+
+process.on('uncaughtException', error => {
+  console.error('Uncaught exception:', error);
+  shutdown();
+});
