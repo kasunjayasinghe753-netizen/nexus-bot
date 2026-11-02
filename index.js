@@ -1,0 +1,156 @@
+const WebSocket = require('ws');
+
+// --- සැකසුම් (Settings) ---
+const COIN_POOL = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'];
+const BOT_TOKEN = "ඔයාගේ_TELEGRAM_BOT_TOKEN_එක_මෙතනට_දාන්න";
+const CHAT_ID = "ඔයාගේ_TELEGRAM_CHAT_ID_එක_මෙතනට_දාන්න";
+
+const futuresBalance = 1000.00;
+const userLeverage = 20;
+const riskPercent = 2;
+const slGapPercent = 4;
+
+let livePrices = {};
+let activeSignals = [];
+
+// --- ටෙලිග්‍රෑම් එකට පණිවිඩ යවන ශ්‍රිතය ---
+async function sendTelegramAlert(message) {
+    if (!BOT_TOKEN || !CHAT_ID) return;
+    try {
+        await fetch(`https://telegram.org{BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: CHAT_ID, text: message, parse_mode: 'Markdown' })
+        });
+        console.log("Telegram alert sent successfully!");
+    } catch (err) {
+        console.error("Telegram delivery failed", err);
+    }
+}
+
+// --- 1. BINANCE WEBSOCKET (සජීවී මිල ගණන් ලබා ගැනීම) ---
+function startWebSocket() {
+    const streams = COIN_POOL.map(coin => `${coin.toLowerCase()}@ticker`).join('/');
+    const ws = new WebSocket(`wss://://binance.com{streams}`);
+
+    ws.on('message', (data) => {
+        const json = JSON.parse(data);
+        if (json.s && json.c) {
+            livePrices[json.s] = parseFloat(json.c);
+            // මිල වෙනස් වන හැම වෙලාවකම TP/SL පරීක්ෂා කිරීම
+            checkTpSlHits(json.s, livePrices[json.s]);
+        }
+    });
+
+    ws.on('close', () => {
+        console.log("WebSocket closed. Reconnecting in 5 seconds...");
+        setTimeout(startWebSocket, 5000);
+    });
+
+    ws.on('error', (err) => console.error("WebSocket Error:", err));
+}
+
+// --- 2. BACKGROUND COIN SCANNING ENGINE (තත්පර 4කට වරක් රන් වේ) ---
+function startScanningEngine() {
+    console.log("NEXUS Multi-Coin Scan Engine Started...");
+    
+    setInterval(() => {
+        const randomCoin = COIN_POOL[Math.floor(Math.random() * COIN_POOL.length)];
+        const currentVolSpike = parseFloat((Math.random() * (2.2 - 0.7) + 0.7).toFixed(2));
+        const currentPriceNum = livePrices[randomCoin];
+
+        if (!currentPriceNum) return; // මිල තවම ලැබී නැත්නම් මඟහරින්න
+
+        // Volume >= 1.5x MA රටාව සිමියුලේට් කිරීම
+        if (currentVolSpike >= 1.5) {
+            const isLong = Math.random() > 0.4;
+            const calculatedMargin = (futuresBalance * (riskPercent / 100)).toFixed(2);
+            const calculatedQty = ((calculatedMargin * userLeverage) / currentPriceNum).toFixed(4);
+
+            const slFactor = slGapPercent / 100;
+            const stopLossTarget = isLong ? (currentPriceNum * (1 - slFactor)) : (currentPriceNum * (1 + slFactor));
+
+            const tpInterval = currentPriceNum * 0.01; 
+            const tp1 = isLong ? currentPriceNum + tpInterval : currentPriceNum - tpInterval;
+            const tp2 = isLong ? currentPriceNum + (tpInterval * 2) : currentPriceNum - (tpInterval * 2);
+            const tp3 = isLong ? currentPriceNum + (tpInterval * 3) : currentPriceNum - (tpInterval * 3);
+
+            const newSignal = {
+                id: Date.now(),
+                symbol: randomCoin,
+                orderType: isLong ? 'BUY LONG' : 'SELL SHORT',
+                leverage: `${userLeverage}x`,
+                entryPrice: currentPriceNum,
+                margin: calculatedMargin,
+                quantity: calculatedQty,
+                tp1, tp2, tp3,
+                sl: stopLossTarget,
+                status: 'PENDING',
+                tp1Hit: false, tp2Hit: false, tp3Hit: false
+            };
+
+            activeSignals.push(newSignal);
+            console.log(`New Signal Generated for ${randomCoin}`);
+
+            const signalMsg = `🚀 *NEXUS MULTI-SCAN VIP SIGNAL* 🚀\n` +
+                `+ 🪙 Asset: #${randomCoin}\n` +
+                `+ 📈 Direction: ${isLong ? '🟢 LONG (BUY)' : '🔴 SHORT (SELL)'}\n` +
+                `+ ⚙️ Leverage: ${userLeverage}x\n\n` +
+                `+ 📍 Entry Price: $${currentPriceNum.toFixed(2)}\n` +
+                `+ 🛡️ Rec. Margin: $${calculatedMargin}\n\n` +
+                `+ 🎯 TAKE PROFIT TARGETS:\n` +
+                `+ 1️⃣ TP1: $${tp1.toFixed(2)}\n` +
+                `+ 2️⃣ TP2: $${tp2.toFixed(2)}\n` +
+                `+ 3️⃣ TP3: $${tp3.toFixed(2)}\n\n` +
+                `+ 🛑 CRITICAL STOP LOSS: $${stopLossTarget.toFixed(2)}`;
+
+            sendTelegramAlert(signalMsg);
+        }
+    }, 4000);
+}
+
+// --- 3. REAL-TIME TP/SL TRACKER ---
+function checkTpSlHits(symbol, currentPrice) {
+    if (activeSignals.length === 0) return;
+
+    activeSignals = activeSignals.map(signal => {
+        if (signal.symbol !== symbol || signal.status !== 'PENDING') return signal;
+
+        if (signal.orderType === 'BUY LONG') {
+            if (!signal.tp1Hit && currentPrice >= signal.tp1) {
+                signal.tp1Hit = true;
+                sendTelegramAlert(`🎯 *${signal.symbol} TAKE PROFIT 1 HIT!* 🚀\n🔥 Profit Target 1 Secured!`);
+            }
+            if (!signal.tp2Hit && currentPrice >= signal.tp2) {
+                signal.tp2Hit = true;
+                sendTelegramAlert(`🎯🎯 *${signal.symbol} TAKE PROFIT 2 HIT!!* 🔥\n🚀 Profit Matrix Cleared!`);
+            }
+            if (currentPrice <= signal.sl) {
+                signal.status = 'STOP_LOSS_HIT';
+                sendTelegramAlert(`🛑 *${signal.symbol} CRITICAL STOP LOSS HIT.*\nRisk managed effectively.`);
+            }
+        } else { // SELL SHORT
+            if (!signal.tp1Hit && currentPrice <= signal.tp1) {
+                signal.tp1Hit = true;
+                sendTelegramAlert(`🎯 *${signal.symbol} SHORT TP1 HIT!* 📉\n🔥 Profit Target Secured!`);
+            }
+            if (!signal.tp2Hit && currentPrice <= signal.tp2) {
+                signal.tp2Hit = true;
+                sendTelegramAlert(`🎯🎯 *${signal.symbol} SHORT TP2 HIT!!* 🚀`);
+            }
+            if (currentPrice >= signal.sl) {
+                signal.status = 'STOP_LOSS_HIT';
+                sendTelegramAlert(`🛑 *${signal.symbol} SHORT SL HIT.*\nRisk managed.`);
+            }
+        }
+        return signal;
+    });
+}
+
+// --- START ALL SYSTEMS ---
+startWebSocket();
+startScanningEngine();
+
+// Render එකේ Web Service එකක් ලෙස නොමිලේ දුවන්න නම් Dummy Port එකක් Open කර තැබිය යුතුය
+const http = require('http');
+http.createServer((req, res) => res.end("Nexus Scanner is Running 24/7")).listen(process.env.PORT || 3000);
