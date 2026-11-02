@@ -13,7 +13,12 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'];
+const SYMBOLS = [
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'DOGEUSDT'
+];
 
 const VOLUME_MULTIPLIER = 3;
 const HISTORY_LENGTH = 20;
@@ -32,7 +37,7 @@ const BINANCE_URL =
   `wss://stream.binance.com:443/stream?streams=${STREAMS}`;
 
 // ==========================================
-// STATE
+// MARKET STATE
 // ==========================================
 
 const market = {};
@@ -52,17 +57,20 @@ for (const symbol of SYMBOLS) {
 let ws = null;
 let reconnectTimer = null;
 let rotationTimer = null;
-let reconnectDelay = 1000;
+
+let reconnectDelay = 5000;
 let stopping = false;
 let connected = false;
 
+let lastWebSocketError = null;
+
 // ==========================================
-// TELEGRAM
+// TELEGRAM NOTIFICATIONS
 // ==========================================
 
 async function sendTelegram(message) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.error('Telegram credentials are missing.');
+    console.warn('Telegram credentials missing.');
     return;
   }
 
@@ -84,11 +92,11 @@ async function sendTelegram(message) {
     );
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(body);
+      throw new Error(await response.text());
     }
 
     console.log('Telegram notification sent.');
+
   } catch (error) {
     console.error('Telegram error:', error.message);
   }
@@ -145,6 +153,7 @@ function generateSignal(symbol, price, volume, average) {
 `;
 
   console.log(message);
+
   sendTelegram(message);
 }
 
@@ -152,7 +161,12 @@ function generateSignal(symbol, price, volume, average) {
 // VOLUME ANALYSIS
 // ==========================================
 
-function processVolume(symbol, tradePrice, tradeQuantity, timestamp) {
+function processVolume(
+  symbol,
+  tradePrice,
+  tradeQuantity,
+  timestamp
+) {
   const state = market[symbol];
 
   const currentMinute = Math.floor(timestamp / 60000);
@@ -161,15 +175,16 @@ function processVolume(symbol, tradePrice, tradeQuantity, timestamp) {
     state.minute = currentMinute;
   }
 
-  // A new minute has started.
   if (currentMinute > state.minute) {
     const completedVolume = state.minuteVolume;
     const completedPrice = state.minuteClose;
 
     if (state.history.length >= MIN_HISTORY) {
       const average =
-        state.history.reduce((sum, value) => sum + value, 0) /
-        state.history.length;
+        state.history.reduce(
+          (sum, value) => sum + value,
+          0
+        ) / state.history.length;
 
       if (
         average > 0 &&
@@ -251,7 +266,6 @@ function handleMessage(rawData) {
   try {
     const message = JSON.parse(rawData.toString());
 
-    // Combined streams wrap events in data.
     const trade = message.data;
 
     if (!trade || trade.e !== 'trade') return;
@@ -278,10 +292,8 @@ function handleMessage(rawData) {
 
     state.price = price;
 
-    // Check existing simulated positions on every trade.
     checkPositions(symbol, price);
 
-    // Analyze trading volume.
     processVolume(
       symbol,
       price,
@@ -290,7 +302,10 @@ function handleMessage(rawData) {
     );
 
   } catch (error) {
-    console.error('Message processing error:', error.message);
+    console.error(
+      'Message processing error:',
+      error.message
+    );
   }
 }
 
@@ -314,22 +329,36 @@ function connectBinance() {
       console.log('Binance WebSocket connected!');
 
       connected = true;
-      reconnectDelay = 1000;
+      lastWebSocketError = null;
+      reconnectDelay = 5000;
 
-      // Rotate before Binance's 24-hour connection limit.
+      clearTimeout(rotationTimer);
+
       rotationTimer = setTimeout(() => {
         console.log('Scheduled WebSocket rotation.');
 
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.close(1000, 'Scheduled rotation');
         }
-      }, 23 * 60 * 60 * 1000 + 50 * 60 * 1000);
+      }, 23 * 60 * 60 * 1000);
     });
 
     ws.on('message', handleMessage);
 
     ws.on('error', error => {
-      console.error('WebSocket error:', error.message);
+      lastWebSocketError = error.message;
+
+      console.error(
+        'WebSocket error:',
+        error.message
+      );
+
+      if (error.message.includes('451')) {
+        console.error(
+          'Binance access is restricted from this server location. ' +
+          'Use an officially supported market-data provider.'
+        );
+      }
     });
 
     ws.on('close', (code, reason) => {
@@ -349,7 +378,13 @@ function connectBinance() {
     });
 
   } catch (error) {
-    console.error('Connection error:', error.message);
+    lastWebSocketError = error.message;
+
+    console.error(
+      'Connection error:',
+      error.message
+    );
+
     scheduleReconnect();
   }
 }
@@ -370,15 +405,50 @@ function scheduleReconnect() {
     connectBinance();
   }, reconnectDelay);
 
-  reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  reconnectDelay = Math.min(
+    reconnectDelay * 2,
+    60000
+  );
 }
 
 // ==========================================
-// HTTP SERVER FOR RENDER
+// HTTP SERVER - RENDER
 // ==========================================
 
 const server = http.createServer((req, res) => {
-  if (req.url === '/health' || req.url === '/') {
+  let pathname;
+
+  try {
+    pathname = new URL(
+      req.url,
+      'http://localhost'
+    ).pathname;
+
+  } catch (error) {
+    res.writeHead(400, {
+      'Content-Type': 'application/json'
+    });
+
+    res.end(JSON.stringify({
+      error: 'Invalid URL'
+    }));
+
+    return;
+  }
+
+  // Remove trailing slash.
+  pathname = pathname.replace(/\/+$/, '') || '/';
+
+  console.log(
+    'HTTP Request:',
+    req.method,
+    req.url,
+    'Path:',
+    pathname
+  );
+
+  // ROOT ENDPOINT
+  if (req.method === 'GET' && pathname === '/') {
     res.writeHead(200, {
       'Content-Type': 'application/json'
     });
@@ -386,29 +456,93 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'running',
       service: 'Crypto Scanner Bot',
-      binanceConnected: connected,
-      symbols: SYMBOLS,
-      uptime: process.uptime()
+      message: 'Nexus Scanner is online',
+      health: '/health'
     }));
 
     return;
   }
 
+  // HEALTH ENDPOINT
+  if (req.method === 'GET' && pathname === '/health') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store'
+    });
+
+    res.end(JSON.stringify({
+      status: 'running',
+      service: 'Crypto Scanner Bot',
+      binanceConnected: connected,
+      lastWebSocketError,
+      symbols: SYMBOLS,
+      uptime: Math.floor(process.uptime()),
+      positions: Object.fromEntries(
+        SYMBOLS.map(symbol => [
+          symbol,
+          market[symbol].position !== null
+        ])
+      )
+    }));
+
+    return;
+  }
+
+  // MARKET STATUS ENDPOINT
+  if (req.method === 'GET' && pathname === '/status') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json'
+    });
+
+    const prices = {};
+
+    for (const symbol of SYMBOLS) {
+      prices[symbol] = {
+        price: market[symbol].price,
+        position: market[symbol].position !== null
+      };
+    }
+
+    res.end(JSON.stringify({
+      status: 'running',
+      binanceConnected: connected,
+      prices
+    }));
+
+    return;
+  }
+
+  // NOT FOUND
   res.writeHead(404, {
     'Content-Type': 'application/json'
   });
 
   res.end(JSON.stringify({
-    error: 'Not found'
+    error: 'Not found',
+    requestedPath: pathname
   }));
 });
 
+// ==========================================
+// SERVER START
+// ==========================================
+
 server.listen(PORT, '0.0.0.0', () => {
+  console.log('================================');
+  console.log('NEXUS CRYPTO SCANNER STARTED');
+  console.log('================================');
+
   console.log(`HTTP server listening on port ${PORT}`);
+
+  console.log('Monitoring:', SYMBOLS.join(', '));
+
+  console.log('Health endpoint: /health');
+
+  console.log('Status endpoint: /status');
 
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
     console.warn(
-      'WARNING: Telegram credentials are not configured.'
+      'WARNING: Telegram credentials are missing.'
     );
   }
 
@@ -416,7 +550,7 @@ server.listen(PORT, '0.0.0.0', () => {
 
   sendTelegram(
     '🤖 <b>Crypto Scanner Bot Started</b>\n\n' +
-    'Binance scanner is starting.\n' +
+    'Scanner is starting.\n' +
     'Monitoring: BTC, ETH, SOL, DOGE.'
   );
 });
@@ -437,7 +571,13 @@ function shutdown() {
 
   if (ws) {
     ws.removeAllListeners();
-    ws.close();
+
+    if (
+      ws.readyState === WebSocket.OPEN ||
+      ws.readyState === WebSocket.CONNECTING
+    ) {
+      ws.terminate();
+    }
   }
 
   server.close(() => {
@@ -445,7 +585,9 @@ function shutdown() {
     process.exit(0);
   });
 
-  setTimeout(() => process.exit(1), 10000).unref();
+  setTimeout(() => {
+    process.exit(1);
+  }, 10000).unref();
 }
 
 process.on('SIGTERM', shutdown);
@@ -457,5 +599,6 @@ process.on('unhandledRejection', error => {
 
 process.on('uncaughtException', error => {
   console.error('Uncaught exception:', error);
+
   shutdown();
 });
