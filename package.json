@@ -1,11 +1,11 @@
 {
-  "status": "running",
-  "service": "Crypto Scanner Bot",
-  "binanceConnected": true,
-  "symbols": [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "DOGEUSDT"
-  ]
+  "name": "crypto-scanner-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
 }
